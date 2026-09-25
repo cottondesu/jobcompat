@@ -1,0 +1,3 @@
+#!/usr/bin/env ruby
+require "jobcompat"
+exit Jobcompat::CLI.start(ARGV)

@@ -1,0 +1,14 @@
+/.bundle/
+/vendor/bundle/
+/coverage/
+/pkg/
+/tmp/
+/.omx/
+/.codegraph
+*.gem
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+.omx/

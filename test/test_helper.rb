@@ -1,0 +1,6 @@
+require "minitest/autorun"
+require "tmpdir"
+require "fileutils"
+require "open3"
+require "json"
+require_relative "../lib/jobcompat"

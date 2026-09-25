@@ -1,0 +1,8 @@
+require_relative "jobcompat/version"
+require_relative "jobcompat/errors"
+require_relative "jobcompat/config"
+require_relative "jobcompat/git_repository"
+require_relative "jobcompat/analysis"
+require_relative "jobcompat/engine"
+require_relative "jobcompat/formatter"
+require_relative "jobcompat/cli"
