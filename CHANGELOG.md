@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 - Unreleased
+## 0.1.0 - 2026-09-26
 
 - Extract positional `perform` contracts from native `Sidekiq::Job` and `Sidekiq::Worker` classes, including reopened classes.
 - Discover direct Sidekiq enqueue calls and compare Git base and head snapshots in all three rolling deployment directions.

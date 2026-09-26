@@ -1,4 +1,4 @@
-# jobcompat v0.1.0 release notes (draft)
+# jobcompat v0.1.0 release notes
 
 jobcompat v0.1.0 is the first public release. It detects native Sidekiq positional argument compatibility issues across Git revisions before deployment.
 
@@ -21,4 +21,4 @@ ActiveJob, keyword compatibility, payload types and Hash schemas, live Redis que
 
 ## Installation
 
-After publication, run `gem install jobcompat` and then `jobcompat check --base origin/main`. Bundler users can add `gem "jobcompat", require: false` and run `bundle exec jobcompat check --base origin/main`.
+Run `gem install jobcompat` and then `jobcompat check --base origin/main`. Bundler users can add `gem "jobcompat", require: false` and run `bundle exec jobcompat check --base origin/main`.
