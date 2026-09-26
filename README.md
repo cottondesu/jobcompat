@@ -27,7 +27,7 @@ Sidekiq persists a worker `class` and an `args` array. The worker receives those
 
 ## Installation
 
-Ruby 3.3 or newer is required. After release, install with `gem install jobcompat`, or add `gem "jobcompat", require: false` to your Gemfile, run `bundle install`, and use `bundle exec jobcompat`. `prism` is the only runtime dependency; jobcompat does not require the Sidekiq gem to inspect source.
+Ruby 3.3 or newer is required. Install with `gem install jobcompat`, or add `gem "jobcompat", require: false` to your Gemfile, run `bundle install`, and use `bundle exec jobcompat`. `prism` is the only runtime dependency; jobcompat does not require the Sidekiq gem to inspect source.
 
 ## Quick Start
 
