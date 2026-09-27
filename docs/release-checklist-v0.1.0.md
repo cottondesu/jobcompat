@@ -1,6 +1,6 @@
 # jobcompat v0.1.0 release checklist
 
-This checklist is for the future gem release. The public repository is `https://github.com/cottondesu/jobcompat`; initial publication of `main` is authorized, but tagging, publishing a gem, and creating a GitHub Release are reserved for the release phase. Gem version `0.1.0` uses tag `v0.1.0`; JSON `schema_version: 1` is a separate contract.
+This checklist records preparation for the published v0.1.0 gem release. The public repository is `https://github.com/cottondesu/jobcompat`; gem version `0.1.0` uses tag `v0.1.0`; JSON `schema_version: 1` is a separate contract. Unchecked items remain external follow-ups and are not assertions that their gates were completed.
 
 ## Local, machine executable checks
 
@@ -13,7 +13,7 @@ This checklist is for the future gem release. The public repository is `https://
 - [x] Repeat the secret and personal path scan; review README, CHANGELOG, LICENSE, release notes, and workflow against the built gem.
 - [x] Verify every GitHub Action reference is a pinned commit SHA and inspect the diff before the initial commit.
 
-## Manual gates before publication
+## Pre-publication manual gates
 
 - [x] Create the public [`cottondesu/jobcompat`](https://github.com/cottondesu/jobcompat) repository with default branch `main`.
 - [x] Set the real repository URL in gemspec `homepage`, `source_code_uri`, `changelog_uri`, and `bug_tracker_uri`.
@@ -21,12 +21,12 @@ This checklist is for the future gem release. The public repository is `https://
 - [ ] Configure a `main` ruleset or branch protection that blocks force pushes and deletion and requires successful CI; avoid unnecessary review gates for a single maintainer.
 - [ ] Confirm GitHub two factor authentication and RubyGems MFA.
 - [ ] Protect the GitHub `release` environment with appropriate approval or deployment restrictions.
-- [ ] Confirm Ruby 3.3, 3.4, and 4.0 GitHub CI jobs all pass on the exact release candidate. Ruby 3.3 CI is mandatory because the local runtime has not been tested.
+- [ ] Confirm Ruby 3.3, 3.4, and 4.0 GitHub CI jobs all pass on the exact release candidate. Ruby 3.3 CI was mandatory because Ruby 3.3 was not tested locally during release preparation.
 - [ ] Configure a RubyGems [Pending Trusted Publisher](https://guides.rubygems.org/trusted-publishing/) for the new `jobcompat` gem using GitHub owner `cottondesu`, repository `jobcompat`, workflow file `release.yml`, and environment `release`. Confirm the details match the release workflow. Do not store a long lived RubyGems API key in GitHub Secrets.
 - [ ] Recheck that `jobcompat` is still unregistered on RubyGems immediately before the actual gem publication.
 - [ ] Review the tag triggered release workflow and built gem one final time before pushing `v0.1.0`.
 
-## Exact publication sequence (future manual actions)
+## Historical publication sequence
 
 1. Recheck gem name before every public push and again immediately before gem publication.
 2. Rerun local tests, build, install, smoke checks, package review, and secret scan. Resolve every build warning.
