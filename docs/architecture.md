@@ -1,7 +1,7 @@
-# jobcompat v0.1 architecture
+# jobcompat v0.2 architecture
 
-Status: implementation design for `0.1.0`
-Date: 2026-09-23
+Status: implemented design for `0.2.0`
+Date: 2026-09-28
 
 ## 1. Architecture principles
 
@@ -9,7 +9,7 @@ Date: 2026-09-23
 2. **No application execution:** parse source; never require, boot, or evaluate it.
 3. **Extraction before semantics:** AST visitors produce facts; a pure engine compares facts.
 4. **Conservative unknowns:** unsupported evidence is explicit and cannot become a pass.
-5. **Small v0.1 surface:** one framework adapter, one parser, one command, two formatters.
+5. **Small native Sidekiq surface:** one framework adapter, one parser, one command, two formatters.
 6. **Determinism:** stable sorting and fully resolved commit SHAs are part of correctness.
 7. **No speculative framework abstraction:** namespaces organize current responsibilities; no generic plugin API ships in v0.1.
 
@@ -187,9 +187,11 @@ It receives source bytes and a revision/path context. It does not open files, in
 
 `WorkerDiscoveryVisitor` owns class/module namespace tracking, direct Sidekiq includes, and direct `perform` definitions.
 
-`ProducerDiscoveryVisitor` owns calls named `perform_async`, `perform_in`, and `perform_at`, supported `.set` chains, syntactic payload counts, lexical namespace capture, and unknown call facts.
+`ProducerDiscoveryVisitor` owns supported worker calls (`perform_async`, `perform_in`, `perform_at`, `perform_bulk`), supported `.set` chains, and exact static `Sidekiq::Client.push` / `push_bulk` calls. Syntax-specific extraction produces normalized producer facts before the compatibility engine. Bulk Array literals become one fact per distinct known inner arity plus at most the required unknown evidence; empty bulk Arrays produce no facts. Client class constants use lexical resolution, while static class Strings use exact canonical resolution. Client Hash entries are ordered evidence: for `"class"` and `"args"` independently, a shared right-to-left scan stops at the first entry capable of writing the key. An explicit string key proves its value; an unknown Hash splat or dynamic/non-static key prevents that proof; static unrelated keys are skipped. Known class evidence remains usable when only args are uncertain, while uncertain class evidence carries no worker attribution into the engine.
 
 `ConstantName` is a small utility that flattens only `ConstantReadNode` and `ConstantPathNode`. It returns a value object with `segments`, `root_qualified`, and `static`; it does not resolve Ruby constants.
+
+Client String targets use one pure analysis helper shared by `push` and `push_bulk`. After safe UTF-8 conversion and encoding validation, Prism parses the value in isolation. Only a single `ConstantReadNode` or static `ConstantPathNode` is accepted, using the existing constant extractor. Root-qualified Strings are rejected, and the extracted canonical name must equal the complete original text, excluding whitespace, comments, and extra syntax. This preserves Ruby's Unicode identifiers without normalization or lexical prefixing. Expected encoding failures and invalid syntax become `unsupported_client_payload`; unexpected parser failures remain tool failures. No source is executed.
 
 `DefinedConstantIndex` records exact or plausible canonical class/module declarations and statically named constant bindings, source locations, and normal-scan membership. It is distinct from supported Sidekiq worker recognition. For a name missing from one revision's recognized workers, it returns `recognized_worker`, `defined_unrecognized`, `outside_scan_scope`, `absent`, or `unverified` using the formal proof in the spec. A present-but-unrecognized class or incomplete presence pass blocks JC004/JC005 ERROR.
 
@@ -212,7 +214,7 @@ The engine MUST be pure with respect to filesystem, Git, environment, clock, and
 Formatters receive a completed or failed result envelope. They MUST NOT recalculate compatibility or suppression. They render already matched suppression audit records without reconstructing omitted findings.
 
 - `Formatter::Text` renders concise human remediation.
-- `Formatter::Json` constructs schema-version-1 primitive Hash/Array data, including each finding's `revisions`, `directions`, and `unknown_reason` and each worker's base/head presence status, calls `JSON.pretty_generate`, and appends exactly one newline. The formal specification fixes two-space pretty JSON; exact-output tests lock it.
+- `Formatter::Json` constructs schema-version-2 primitive Hash/Array data, preserving the v1 shape while extending producer `unknown_reason` values. It includes each finding's `revisions`, `directions`, and `unknown_reason` and each worker's base/head presence status, calls `JSON.pretty_generate`, and appends exactly one newline.
 
 Both consume already sorted results.
 
@@ -317,6 +319,8 @@ Presence-only blobs reuse this parser with a narrower visitor. A candidate-beari
 | keywords | `ParametersNode#keywords/#keyword_rest` | unsupported status, except forwarding node |
 | forwarding | `ForwardingParameterNode` | unbounded positional acceptance |
 | enqueue call | `CallNode#name/#receiver/#arguments/#block` | method, receiver fact, argument nodes, location |
+| bulk rows | `ArrayNode#elements`, `SplatNode` | distinct known inner arities and dynamic-row evidence |
+| Client payload | `HashNode` / `KeywordHashNode`, `AssocNode`, `AssocSplatNode` | exact string keys, worker target mode, args shape, dynamic payload evidence |
 | safe navigation | `CallNode#call_operator_loc` whose source slice is `&.` | unknown receiver evidence |
 | call arguments | `ArgumentsNode#arguments` | syntactic count |
 | splat | `SplatNode` | unknown producer arity |
@@ -354,12 +358,13 @@ UnresolvedEnqueueCall
   lexical_namespace   Array<String>
   payload_arity       Integer | nil
   arity_known         true | false
-  method              perform_async | perform_in | perform_at
+  method              perform_async | perform_in | perform_at | perform_bulk | push | push_bulk
+  resolution_mode     lexical_constant | client_constant | exact_string
   location
 unknown_reason      Symbol | nil
 ```
 
-The symbol values map one-to-one to the schema-v1 strings enumerated in `docs/spec-v0.1.md`; visitors do not invent free-form reason text.
+The reason values map one-to-one to the frozen baseline strings in `docs/spec-v0.1.md` plus the schema-v2 producer additions in `docs/spec-v0.2.md`; visitors do not invent free-form reason text.
 
 Only after both revisions' worker names are known does the engine resolve these facts. This avoids ordering dependence between files and enables head calls to removed base workers.
 
@@ -410,7 +415,7 @@ The JSON formatter serializes both classes as a contract object with `status: kn
 worker_name    : String | nil
 payload_arity  : Integer | nil
 arity_known    : Boolean
-method         : :perform_async | :perform_in | :perform_at
+method         : :perform_async | :perform_in | :perform_at | :perform_bulk | :push | :push_bulk
 location       : SourceLocation
 unknown_reason : Symbol | nil
 ```
@@ -565,7 +570,7 @@ The v0.1 security posture is a product characteristic:
 
 Threat boundary: the repository and config may be untrusted input. Prism and Git process those bytes, but jobcompat never evaluates Ruby. JSON/text escaping MUST prevent control characters in paths/excerpts from corrupting output framing. Text formatter should escape non-printable path characters; JSON handles them through the JSON encoder.
 
-## 14. Future extension points without v0.1 over-engineering
+## 14. Future extension points without over-engineering
 
 The following seams are sufficient:
 
@@ -578,10 +583,10 @@ The following seams are sufficient:
 
 Potential roadmap order:
 
-1. more native Sidekiq producer forms (`Client.push`, bulk) after precision research;
+1. more native Sidekiq producer forms only after precision research;
 2. SARIF/GitHub integration;
 3. optional changed-path performance hints without weakening whole-snapshot facts;
 4. ActiveJob as a separately specified adapter;
 5. other ecosystems only after defining their serialization/deployment contracts.
 
-Do not add an adapter registry, dependency injection container, generic AST facade, or rule plugin system in v0.1.
+Do not add an adapter registry, dependency injection container, generic AST facade, or rule plugin system without a concrete second implementation.

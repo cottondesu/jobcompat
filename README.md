@@ -54,11 +54,11 @@ ERROR JC001 ExportJob
   Risk: Jobs queued by the base revision may fail after deployment.
 ```
 
-The second direction appears only when HEAD also has a one-argument producer. Output includes source locations, suggested migration steps, resolved commit SHAs, and a summary. JSON output uses `schema_version: 1` and includes per-worker compatibility matrices.
+The second direction appears only when HEAD also has a one-argument producer. Output includes source locations, suggested migration steps, resolved commit SHAs, and a summary. JSON output uses `schema_version: 2` and includes per-worker compatibility matrices.
 
 ## How it works
 
-jobcompat reads committed Ruby blobs through Git, parses each selected file with Prism, groups reopened class fragments by canonical name, discovers direct Sidekiq includes and enqueue calls, then compares positional-arity intervals. Application code is never loaded or executed.
+jobcompat reads committed Ruby blobs through Git, parses each selected file with Prism, groups reopened class fragments by canonical name, normalizes supported Sidekiq producer syntax into worker/arity facts, then compares positional-arity intervals. Application code is never loaded or executed.
 
 Its separate `DefinedConstantIndex` checks tracked Ruby class declarations and named bindings before declaring a worker class absent. A class that remains in an excluded file or stops using a direct Sidekiq include produces a warning rather than a removal error.
 
@@ -119,13 +119,30 @@ Run `jobcompat check --base origin/main --format json` after fetching the compar
 
 ## Supported Sidekiq patterns
 
-Direct `include Sidekiq::Job` and legacy `include Sidekiq::Worker` are recognized in top-level and supported namespaced classes. Reopened fragments may split the include and `perform` across files. The producer forms are `Job.perform_async(...)`, `Job.perform_in(schedule, ...)`, `Job.perform_at(time, ...)`, and `Job.set(...).perform_async(...)`. Hash and Array expressions each count as one payload argument. A splat or forwarded producer argument makes arity unknown.
+Direct `include Sidekiq::Job` and legacy `include Sidekiq::Worker` are recognized in top-level and supported namespaced classes. Reopened fragments may split the include and `perform` across files. Supported producer APIs are:
 
-Positional `perform` parameters may be required, optional, rest, post-rest, or forwarding. Keyword parameters make the worker contract unknown for v0.1.
+- `Job.perform_async(...)`, `Job.perform_in(schedule, ...)`, `Job.perform_at(time, ...)`, and `Job.perform_bulk(...)`;
+- `Job.set(...).perform_async(...)`, `.perform_in(...)`, `.perform_at(...)`, and `.perform_bulk(...)`;
+- `Sidekiq::Client.push(...)` and `Sidekiq::Client.push_bulk(...)` with a static Hash payload using string `"class"` and `"args"` keys.
 
-## Limitations and v0.1 non-goals
+Client Hash entries are resolved per key in source order. A later explicit `"class"` or `"args"` overrides earlier writes; a later unknown Hash splat or dynamic key makes only the keys it may replace uncertain. Static unrelated keys do not affect certainty. A statically known worker is preserved when only args may be replaced; an uncertain class is not attributed to an earlier worker and cannot produce JC005 for it.
 
-v0.1 checks **positional arity only**. It does not check value types, Hash internals, keyword compatibility, or JSON serialization. It supports native Sidekiq, not ActiveJob. Only direct includes and the documented direct producer calls are analyzed. `Sidekiq::Client.push`, bulk APIs, wrappers, aliases, inheritance, concerns, arbitrary metaprogramming, feature flags, and general Ruby class/module or superclass conflict analysis are outside scope.
+Hash and Array expressions each count as one ordinary payload argument. Bulk calls produce one fact per distinct statically known inner Array arity:
+
+```ruby
+ExportJob.perform_bulk([
+  [1],
+  [2, "csv"]
+])
+```
+
+jobcompat sees payload arities 1 and 2. A dynamic bulk row is retained as `dynamic_bulk_arguments` uncertainty without discarding known rows from the same callsite. A Client class String is an exact canonical Ruby constant name; it is never resolved relative to the surrounding Ruby namespace or Unicode-normalized. Malformed names produce JC007 warnings.
+
+Positional `perform` parameters may be required, optional, rest, post-rest, or forwarding. Keyword parameters make the worker contract unknown in v0.2.
+
+## Limitations and v0.2 non-goals
+
+v0.2 checks **positional arity only**. It does not check value types, Hash internals, keyword compatibility, or JSON serialization. It supports native Sidekiq, not ActiveJob. Dynamic bulk collections are warning/unknown, Client payload variables are not followed, and custom wrappers are not analyzed. ActiveJob, arbitrary Client instances, Hash internal schemas, aliases, inheritance, concerns, arbitrary metaprogramming, feature flags, and general Ruby class/module or superclass conflict analysis remain outside scope.
 
 No repository producer callsite does **not** prove an empty queue: queued, scheduled, retried, historical, and external jobs may exist. JC004 requires a completed static absence proof across tracked `.rb` source. An excluded or unrecognized declaration warns. JC005 is a structural rolling-deploy error conditional on an old Sidekiq process being able to consume the new job's queue. Queue isolation and feature flags are not analyzed. Dynamic source may warn or be missed. Working-tree edits are ignored.
 
@@ -150,11 +167,11 @@ Analysis reads local Git objects only. It does not connect to Redis, boot Rails,
 
 ## Roadmap
 
-Possible future work includes additional native Sidekiq producer APIs and SARIF output. Other frameworks would be considered only after v0.1 usage evidence; they are not supported now.
+Possible future work includes SARIF output and additional evidence sources. Other frameworks are not supported now.
 
 ## Contributing
 
-Run `bundle exec rake test` and `gem build jobcompat.gemspec` with Ruby 3.3 or newer. Tests create temporary Git repositories and need no Redis or Sidekiq server. See [the normative v0.1 spec](docs/spec-v0.1.md) before changing rule behavior.
+Run `bundle exec rake test` and `gem build jobcompat.gemspec` with Ruby 3.3 or newer. Tests create temporary Git repositories and need no Redis or Sidekiq server. The [v0.1 specification](docs/spec-v0.1.md) remains the baseline; [the normative v0.2 delta](docs/spec-v0.2.md) defines the added producer coverage.
 
 ## License
 

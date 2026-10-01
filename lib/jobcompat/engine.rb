@@ -123,10 +123,11 @@ module Jobcompat
     private
 
     def resolve(raw_calls)
-      raw_calls.sort_by { |call| [call.path, call.location.line, call.location.column] }.filter_map do |call|
+      raw_calls.sort_by { |call| [call.path, call.location.line, call.location.column, call.method,
+                                  call.arity.nil? ? Float::INFINITY : call.arity, call.unknown_reason.to_s] }.filter_map do |call|
         worker = nil
         if call.receiver
-          candidates = if call.root
+          candidates = if call.resolution_mode == "exact_string" || call.root
                          [call.receiver]
                        elsif call.namespace.nil?
                          []
@@ -134,9 +135,11 @@ module Jobcompat
                          (call.namespace.reverse.map { |prefix| "#{prefix}::#{call.receiver}" } + [call.receiver]).uniq
                        end
           worker = candidates.find { |name| @names.include?(name) }
-          next unless worker || (!call.root && call.namespace.nil?)
+          client_target = %w[client_constant exact_string].include?(call.resolution_mode)
+          next unless worker || client_target || (!call.root && call.namespace.nil?)
         end
         reason = call.unknown_reason
+        reason ||= "dynamic_client_class" if call.receiver && worker.nil? && %w[client_constant exact_string].include?(call.resolution_mode)
         reason ||= call.namespace.nil? ? "unsupported_constant_path" : "dynamic_receiver" if worker.nil?
         {worker: worker, location: call.location, arity: call.arity, reason: reason, raw: call}
       end

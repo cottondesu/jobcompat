@@ -98,7 +98,7 @@ module Jobcompat
     end
 
     def envelope(status, findings, suppressions, workers, diagnostics, summary)
-      {schema_version: 1, tool: {name: "jobcompat", version: VERSION}, status: status,
+      {schema_version: 2, tool: {name: "jobcompat", version: VERSION}, status: status,
        comparison: {deployment_model: "rolling", base: {ref: @base, sha: @base_sha}, head: {ref: @head, sha: @head_sha}},
        configuration: {path: @loaded_config}, findings: findings, suppressions: suppressions, workers: workers,
        diagnostics: diagnostics, summary: summary}

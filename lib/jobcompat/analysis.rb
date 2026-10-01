@@ -18,7 +18,7 @@ module Jobcompat
        signature_kind: signature_kind, signature: signature, unknown_reason: unknown_reason}
     end
   end
-  Call = Data.define(:revision, :path, :location, :receiver, :root, :namespace, :scope, :method, :arity, :unknown_reason, :fingerprint_parts)
+  Call = Data.define(:revision, :path, :location, :receiver, :resolution_mode, :root, :namespace, :scope, :method, :arity, :unknown_reason, :fingerprint_parts)
   Unknown = Data.define(:revision, :kind, :reason, :worker, :locations, :fingerprint_parts)
   Fragment = Data.define(:name, :declaration, :includes, :include_tokens, :performs, :lexical_scope)
 
@@ -126,6 +126,7 @@ module Jobcompat
     end
 
     def self.constant(node)
+      node = unwrap_parentheses(node)
       case node
       when Prism::ConstantReadNode then [[node.name.to_s.encode(Encoding::UTF_8)], false]
       when Prism::ConstantPathNode, Prism::ConstantPathTargetNode
@@ -136,6 +137,13 @@ module Jobcompat
           parent && [parent[0] + [node.name.to_s.encode(Encoding::UTF_8)], parent[1]]
         end
       end
+    end
+
+    def self.unwrap_parentheses(node)
+      while node.is_a?(Prism::ParenthesesNode) && node.body.is_a?(Prism::StatementsNode) && node.body.body.one?
+        node = node.body.body.first
+      end
+      node
     end
 
     def self.normalize(source)
@@ -237,14 +245,21 @@ module Jobcompat
 
     def extract_call(node, namespace, scope, statement)
       method = node.name.to_s
-      return unless %w[perform_async perform_in perform_at].include?(method)
-      return if node.receiver.is_a?(Prism::CallNode) && node.receiver.name == :set && method != "perform_async"
-      receiver = node.receiver
-      set_call = receiver if receiver.is_a?(Prism::CallNode) && receiver.name == :set && method == "perform_async"
+      if %w[push push_bulk].include?(method) && sidekiq_client?(node.receiver)
+        extract_client_call(node, namespace, scope, statement, method)
+        return
+      end
+      return unless %w[perform_async perform_in perform_at perform_bulk].include?(method)
+      receiver = self.class.unwrap_parentheses(node.receiver)
+      set_call = receiver if receiver.is_a?(Prism::CallNode) && receiver.name == :set
       receiver = set_call.receiver if set_call
       constant = self.class.constant(receiver)
       safe = node.call_operator_loc&.slice == "&." || set_call&.call_operator_loc&.slice == "&."
       arguments = node.arguments&.arguments || []
+      if method == "perform_bulk"
+        extract_worker_bulk(node, namespace, scope, statement, method, receiver, constant, safe, arguments)
+        return
+      end
       reason = if arguments.any? { |arg| arg.is_a?(Prism::SplatNode) }
                  "splat_arguments"
                elsif arguments.any? { |arg| arg.is_a?(Prism::ForwardingArgumentsNode) }
@@ -259,9 +274,145 @@ module Jobcompat
                  "safe_navigation_receiver"
                end
       arity = reason && %w[splat_arguments forwarded_arguments missing_schedule_argument].include?(reason) ? nil : arguments.length - (method == "perform_async" ? 0 : 1)
+      emit_call(node, namespace, scope, statement, method, constant&.first&.join("::"), "lexical_constant", constant&.last, arity, reason)
+    end
+
+    def extract_worker_bulk(node, namespace, scope, statement, method, receiver_node, constant, safe, arguments)
+      reason = if safe
+                 "safe_navigation_receiver"
+               elsif constant.nil? && !receiver_node.is_a?(Prism::ConstantPathNode)
+                 "dynamic_receiver"
+               elsif constant.nil?
+                 "unsupported_constant_path"
+               elsif arguments.empty?
+                 "dynamic_bulk_arguments"
+               elsif arguments.drop(1).any? { |arg| !arg.is_a?(Prism::KeywordHashNode) || arg.elements.any? { |element| element.is_a?(Prism::AssocSplatNode) } }
+                 "dynamic_bulk_options"
+               end
+      receiver = constant&.first&.join("::")
+      if reason
+        emit_call(node, namespace, scope, statement, method, receiver, "lexical_constant", constant&.last, nil, reason)
+        return
+      end
+      arities, unknown = extract_bulk_arities(arguments.first)
+      arities.each do |arity|
+        emit_call(node, namespace, scope, statement, method, receiver, "lexical_constant", constant.last, arity, nil)
+      end
+      if unknown
+        emit_call(node, namespace, scope, statement, method, receiver, "lexical_constant", constant.last, nil, "dynamic_bulk_arguments")
+      end
+    end
+
+    def extract_client_call(node, namespace, scope, statement, method)
+      if node.call_operator_loc&.slice == "&."
+        emit_call(node, namespace, scope, statement, method, nil, nil, nil, nil, "safe_navigation_receiver")
+        return
+      end
+      arguments = node.arguments&.arguments || []
+      payload = arguments.one? ? self.class.unwrap_parentheses(arguments.first) : nil
+      unless payload.is_a?(Prism::HashNode) || payload.is_a?(Prism::KeywordHashNode)
+        emit_call(node, namespace, scope, statement, method, nil, nil, nil, nil, "dynamic_client_payload")
+        return
+      end
+      associations = payload.elements.select { |element| element.is_a?(Prism::AssocNode) }
+      class_node, class_status = client_hash_value(payload.elements, "class")
+      args_node, args_status = client_hash_value(payload.elements, "args")
+      args_node = self.class.unwrap_parentheses(args_node)
+      invalid_keys = associations.any? do |association|
+        key = self.class.unwrap_parentheses(association.key)
+        next false if key.is_a?(Prism::StringNode)
+        next false unless key.static_literal?
+        method != "push_bulk" || !key.is_a?(Prism::SymbolNode) || !%w[at batch_size spread_interval].include?(key.unescaped)
+      end
+      reason = "unsupported_client_payload" if [class_status, args_status].any? { |status| %i[missing unsupported].include?(status) } || invalid_keys
+      reason ||= "dynamic_client_class" if class_status == :unknown
+      receiver, mode, rooted, class_reason = client_worker(class_node)
+      reason ||= class_reason
+      reason ||= method == "push" ? "dynamic_client_args" : "dynamic_bulk_arguments" if args_status == :unknown
+      if reason
+        emit_call(node, namespace, scope, statement, method, receiver, mode, rooted, nil, reason)
+        return
+      end
+      if method == "push"
+        unless args_node.is_a?(Prism::ArrayNode) && args_node.elements.none? { |element| element.is_a?(Prism::SplatNode) }
+          emit_call(node, namespace, scope, statement, method, receiver, mode, rooted, nil, "dynamic_client_args")
+          return
+        end
+        emit_call(node, namespace, scope, statement, method, receiver, mode, rooted, args_node.elements.length, nil)
+      else
+        arities, unknown = extract_bulk_arities(args_node)
+        arities.each { |arity| emit_call(node, namespace, scope, statement, method, receiver, mode, rooted, arity, nil) }
+        if unknown
+          emit_call(node, namespace, scope, statement, method, receiver, mode, rooted, nil, "dynamic_bulk_arguments")
+        end
+      end
+    end
+
+    def extract_bulk_arities(node)
+      node = self.class.unwrap_parentheses(node)
+      return [[], true] unless node.is_a?(Prism::ArrayNode)
+      arities = []
+      unknown = false
+      node.elements.each do |element|
+        element = self.class.unwrap_parentheses(element)
+        if element.is_a?(Prism::ArrayNode) && element.elements.none? { |item| item.is_a?(Prism::SplatNode) }
+          arities << element.elements.length
+        else
+          unknown = true
+        end
+      end
+      [arities.uniq.sort, unknown]
+    end
+
+    def sidekiq_client?(node)
+      constant = self.class.constant(node)
+      constant && constant.first == %w[Sidekiq Client]
+    end
+
+    def client_hash_value(elements, key)
+      elements.reverse_each do |element|
+        return [nil, :unknown] if element.is_a?(Prism::AssocSplatNode)
+        entry_key = self.class.unwrap_parentheses(element.key)
+        if entry_key.is_a?(Prism::StringNode)
+          return [element.value, :known] if entry_key.unescaped == key
+        elsif !entry_key.static_literal?
+          return [nil, :unsupported]
+        end
+      end
+      [nil, :missing]
+    end
+
+    def client_worker(node)
+      node = self.class.unwrap_parentheses(node)
+      constant = self.class.constant(node)
+      return [constant.first.join("::"), "client_constant", constant.last, nil] if constant
+      if node.is_a?(Prism::StringNode)
+        name = canonical_client_string_worker_name(node.unescaped)
+        return [name, "exact_string", false, nil] if name
+        return [nil, nil, nil, "unsupported_client_payload"]
+      end
+      [nil, nil, nil, "dynamic_client_class"]
+    end
+
+    def canonical_client_string_worker_name(value)
+      name = value.encode(Encoding::UTF_8)
+      return unless name.valid_encoding?
+      result = Prism.parse(name)
+      return unless result.errors.empty? && result.value.statements.body.one?
+      node = result.value.statements.body.first
+      return unless node.is_a?(Prism::ConstantReadNode) || node.is_a?(Prism::ConstantPathNode)
+      constant = self.class.constant(node)
+      return unless constant && !constant.last
+      canonical_name = constant.first.join("::")
+      canonical_name if canonical_name == name
+    rescue EncodingError
+      nil
+    end
+
+    def emit_call(node, namespace, scope, statement, method, receiver, resolution_mode, root, arity, reason)
       expression = self.class.normalize(node.location.slice)
       enclosing = self.class.normalize((statement || node).location.slice)
-      @calls << Call.new(@revision, @path, loc(node, reason ? "unknown_call" : "producer"), constant&.first&.join("::"), constant&.last,
+      @calls << Call.new(@revision, @path, loc(node, reason ? "unknown_call" : "producer"), receiver, resolution_mode, root,
                          namespace, scope, method, arity, reason, [@path, scope, expression, enclosing])
     end
 
