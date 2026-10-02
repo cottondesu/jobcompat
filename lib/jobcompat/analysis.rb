@@ -1,4 +1,5 @@
 require "prism"
+require_relative "canonical_worker_name"
 
 module Jobcompat
   Location = Data.define(:revision, :path, :line, :column, :role, :excerpt) do
@@ -387,26 +388,11 @@ module Jobcompat
       constant = self.class.constant(node)
       return [constant.first.join("::"), "client_constant", constant.last, nil] if constant
       if node.is_a?(Prism::StringNode)
-        name = canonical_client_string_worker_name(node.unescaped)
+        name = CanonicalWorkerName.parse(node.unescaped)
         return [name, "exact_string", false, nil] if name
         return [nil, nil, nil, "unsupported_client_payload"]
       end
       [nil, nil, nil, "dynamic_client_class"]
-    end
-
-    def canonical_client_string_worker_name(value)
-      name = value.encode(Encoding::UTF_8)
-      return unless name.valid_encoding?
-      result = Prism.parse(name)
-      return unless result.errors.empty? && result.value.statements.body.one?
-      node = result.value.statements.body.first
-      return unless node.is_a?(Prism::ConstantReadNode) || node.is_a?(Prism::ConstantPathNode)
-      constant = self.class.constant(node)
-      return unless constant && !constant.last
-      canonical_name = constant.first.join("::")
-      canonical_name if canonical_name == name
-    rescue EncodingError
-      nil
     end
 
     def emit_call(node, namespace, scope, statement, method, receiver, resolution_mode, root, arity, reason)

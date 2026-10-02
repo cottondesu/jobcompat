@@ -111,7 +111,7 @@ ignore:
     reason: "Enqueue starts after deployment completes"
 ```
 
-Each configured `include` or `exclude` list **replaces** its default list, so copy the defaults you still want. `--config PATH` selects another YAML file; a relative path is resolved from the invocation directory. Unknown keys and unsafe YAML aliases fail with exit 2. An ignore entry must have an exact rule, canonical worker name, and non-blank reason. Matched suppressions appear in text and JSON audit output.
+Each configured `include` or `exclude` list **replaces** its default list, so copy the defaults you still want. `--config PATH` selects another YAML file; a relative path is resolved from the invocation directory. Unknown keys and unsafe YAML aliases fail with exit 2. An ignore entry must have an exact rule, canonical worker name, and non-blank reason. `ignore[].worker` uses the same canonical Ruby constant-name rules as exact Client String worker targets, including valid Unicode identifiers; matching is exact and not Unicode-normalized. Matched suppressions appear in text and JSON audit output.
 
 ## CI usage
 
@@ -171,7 +171,7 @@ Possible future work includes SARIF output and additional evidence sources. Othe
 
 ## Contributing
 
-Run `bundle exec rake test` and `gem build jobcompat.gemspec` with Ruby 3.3 or newer. Tests create temporary Git repositories and need no Redis or Sidekiq server. The [v0.1 specification](docs/spec-v0.1.md) remains the baseline; [the normative v0.2 delta](docs/spec-v0.2.md) defines the added producer coverage.
+Run `bundle exec rake test` and `gem build jobcompat.gemspec` with Ruby 3.3 or newer. Tests create temporary Git repositories and need no Redis or Sidekiq server. The [v0.1 specification](docs/spec-v0.1.md) remains the baseline; [the normative v0.2 delta](docs/spec-v0.2.md) defines the added producer coverage, and [the v0.2.1 delta](docs/spec-v0.2.1.md) defines shared canonical worker-name validation.
 
 ## License
 

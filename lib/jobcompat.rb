@@ -1,5 +1,6 @@
 require_relative "jobcompat/version"
 require_relative "jobcompat/errors"
+require_relative "jobcompat/canonical_worker_name"
 require_relative "jobcompat/config"
 require_relative "jobcompat/git_repository"
 require_relative "jobcompat/analysis"

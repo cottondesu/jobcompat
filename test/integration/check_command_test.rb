@@ -178,6 +178,122 @@ class CheckCommandTest < Minitest::Test
     end
   end
 
+  UNICODE_WORKER = "A\u0301Job"
+
+  def unicode_worker(name, namespace: nil)
+    body = "class #{name}\n  include Sidekiq::Job\n\n  def perform(id)\n  end\nend\n"
+    namespace ? "module #{namespace}\n#{body.gsub(/^(?=.)/, '  ')}end\n" : body
+  end
+
+  def client_push(name, args)
+    "Sidekiq::Client.push(\n  \"class\" => \"#{name}\",\n  \"args\" => #{args}\n)\n"
+  end
+
+  def unicode_suppression(worker, rule: "JC003")
+    "version: 1\n\nignore:\n  - rule: #{rule}\n    worker: #{worker}\n    reason: intentional migration\n"
+  end
+
+  def test_unicode_worker_suppression_end_to_end_with_audit_and_determinism
+    assert_equal [0x41, 0x301, 0x4a, 0x6f, 0x62], UNICODE_WORKER.codepoints
+    with_repository do |dir|
+      base = commit(dir, "app/jobs/unicode_job.rb" => unicode_worker(UNICODE_WORKER))
+      commit(dir, "app/jobs/unicode_job.rb" => unicode_worker(UNICODE_WORKER) + "\n" + client_push(UNICODE_WORKER, "[1, 2]"))
+      data, error, code = json_check(dir, base)
+      assert_equal 1, code, error
+      assert_equal [["JC003", UNICODE_WORKER, 2]], data["findings"].map { |item| [item["rule_id"], item["worker"], item["payload_arity"]] }
+      assert_equal UNICODE_WORKER.codepoints, data["findings"][0]["worker"].codepoints
+      assert_equal 0, data["summary"]["suppressed"]
+
+      File.write(File.join(dir, ".jobcompat.yml"), unicode_suppression(UNICODE_WORKER))
+      data, error, code = json_check(dir, base)
+      assert_equal 0, code, error
+      assert_empty error
+      assert_equal 2, data["schema_version"]
+      assert_equal "completed", data["status"]
+      assert_empty data["findings"]
+      assert_equal 0, data["summary"]["errors"]
+      assert_equal 1, data["summary"]["suppressed"]
+      assert_equal [{"rule_id" => "JC003", "worker" => UNICODE_WORKER, "reason" => "intentional migration", "finding_count" => 1}], data["suppressions"]
+      assert_equal UNICODE_WORKER.codepoints, data["suppressions"][0]["worker"].codepoints
+
+      output, error, status = check(dir, base)
+      assert_equal 0, status.exitstatus, error
+      assert_includes output, "Suppressed findings:\n  JC003 #{UNICODE_WORKER} (1): intentional migration\n"
+      assert_match(/^Summary: 0 errors, .*, 1 suppressed$/, output)
+
+      json_runs = Array.new(2) { check(dir, base, "--format", "json").first }
+      text_runs = Array.new(2) { check(dir, base).first }
+      assert_equal json_runs[0].b, json_runs[1].b
+      assert_equal text_runs[0].b, text_runs[1].b
+      assert_equal output.b, text_runs[0].b
+      assert_includes json_runs[0].b, UNICODE_WORKER.b
+    end
+  end
+
+  def test_unicode_suppression_matches_exact_codepoints_only
+    precomposed = "\u00C1Job"
+    refute_equal precomposed, UNICODE_WORKER
+    [[UNICODE_WORKER, precomposed], [precomposed, UNICODE_WORKER]].each do |finding_worker, suppressed_worker|
+      with_repository do |dir|
+        base = commit(dir, "app/jobs/unicode_job.rb" => unicode_worker(finding_worker))
+        commit(dir, "app/jobs/unicode_job.rb" => unicode_worker(finding_worker) + client_push(finding_worker, "[1, 2]"),
+                    ".jobcompat.yml" => unicode_suppression(suppressed_worker))
+        data, error, code = json_check(dir, base)
+        assert_equal 1, code, error
+        assert_equal [["JC003", finding_worker]], data["findings"].map { |item| [item["rule_id"], item["worker"]] }
+        assert_equal finding_worker.codepoints, data["findings"][0]["worker"].codepoints
+        assert_equal 0, data["summary"]["suppressed"]
+        assert_empty data["suppressions"]
+      end
+    end
+  end
+
+  def test_qualified_unicode_suppression_is_exact
+    qualified = "Admin::#{UNICODE_WORKER}"
+    with_repository do |dir|
+      source = unicode_worker(UNICODE_WORKER, namespace: "Admin")
+      base = commit(dir, "app/jobs/unicode_job.rb" => source)
+      commit(dir, "app/jobs/unicode_job.rb" => source + client_push(qualified, "[1, 2]"))
+      File.write(File.join(dir, ".jobcompat.yml"), unicode_suppression(UNICODE_WORKER))
+      data, error, code = json_check(dir, base)
+      assert_equal 1, code, error
+      assert_equal [["JC003", qualified]], data["findings"].map { |item| [item["rule_id"], item["worker"]] }
+      assert_equal 0, data["summary"]["suppressed"]
+      File.write(File.join(dir, ".jobcompat.yml"), unicode_suppression(qualified))
+      data, error, code = json_check(dir, base)
+      assert_equal 0, code, error
+      assert_empty data["findings"]
+      assert_equal 1, data["summary"]["suppressed"]
+      assert_equal [{"rule_id" => "JC003", "worker" => qualified, "reason" => "intentional migration", "finding_count" => 1}], data["suppressions"]
+    end
+  end
+
+  def test_noncanonical_and_invalid_byte_suppression_workers_are_config_errors
+    with_repository do |dir|
+      base = commit(dir, "app/export_job.rb" => worker + "ExportJob.perform_async(1, 2)\n")
+      {
+        "version: 1\nignore:\n  - rule: JC003\n    worker: \"ExportJob()\"\n    reason: x\n" => "ignore[0].worker is invalid",
+        "version: 1\nignore:\n  - rule: JC003\n    worker: \"::ExportJob\"\n    reason: x\n" => "ignore[0].worker is invalid",
+        "version: 1\nignore:\n  - rule: JC003\n    worker: \" ExportJob\"\n    reason: x\n" => "ignore[0].worker is invalid",
+        "version: 1\nignore:\n  - rule: JC003\n    worker: !!binary wUpvYg==\n    reason: x\n" => "ignore[0].worker is invalid",
+        "version: 1\nignore:\n  - rule: JC003\n    worker: A\xFFJob\n    reason: x\n".b => /\AInvalid config: /
+      }.each do |config, message|
+        File.binwrite(File.join(dir, ".jobcompat.yml"), config)
+        data, error, code = json_check(dir, base)
+        assert_equal 2, code, config.inspect
+        assert_empty error
+        assert_equal "failed", data["status"]
+        assert_equal [["config_error"]], data["diagnostics"].map { |item| [item["category"]] }
+        message.is_a?(Regexp) ? assert_match(message, data["diagnostics"][0]["message"]) : assert_equal(message, data["diagnostics"][0]["message"])
+        output, error, status = check(dir, base)
+        assert_equal 2, status.exitstatus
+        assert_empty output
+        assert_match(/\Aconfig_error: /, error)
+        refute_match(/internal_error|ArgumentError|EncodingError|\.rb:\d+/, error)
+      end
+    end
+  end
+
   def test_dirty_worktree_is_unchanged_and_text_is_human_readable
     with_repository do |dir|
       base = commit(dir, "app/export_job.rb" => worker + "ExportJob.perform_async(1)\n")

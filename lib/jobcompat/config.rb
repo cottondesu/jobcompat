@@ -1,4 +1,5 @@
 require "psych"
+require_relative "canonical_worker_name"
 
 module Jobcompat
   class Config
@@ -36,12 +37,7 @@ module Jobcompat
         fields!(item, %w[rule worker reason], "ignore[#{index}]")
         raise Error.new("ignore[#{index}] must have rule, worker, reason", category: "config_error") unless item.keys.sort == %w[reason rule worker]
         raise Error.new("ignore[#{index}].rule is invalid", category: "config_error") unless RULES.include?(item["rule"])
-        worker = item["worker"]
-        valid_worker = worker.is_a?(String) && !worker.empty? && !worker.start_with?("::") && worker.split("::", -1).all? do |segment|
-          first = segment.each_char.first
-          first && (first.match?(/[A-Z]/) || (first.ord > 127 && first.match?(/\p{L}/))) && segment.match?(/\A[\p{Alnum}_]+\z/)
-        end
-        raise Error.new("ignore[#{index}].worker is invalid", category: "config_error") unless valid_worker
+        raise Error.new("ignore[#{index}].worker is invalid", category: "config_error") unless CanonicalWorkerName.parse(item["worker"])
         raise Error.new("ignore[#{index}].reason must be non-blank", category: "config_error") unless item["reason"].is_a?(String) && !item["reason"].strip.empty?
         key = [item["rule"], item["worker"]]
         raise Error.new("duplicate ignore for #{key.join(' ')}", category: "config_error") if seen[key]

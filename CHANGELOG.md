@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 - Unreleased
+
+Canonical worker-name consistency:
+
+- Accept canonical Unicode worker names, such as names with combining marks and qualified `Admin::ÁJob`, in targeted `.jobcompat.yml` suppressions. Matching stays exact and is not Unicode-normalized.
+- Share one Prism-based canonical worker-name validator between Client String producer analysis and Config.
+- Report malformed, non-constant, or invalid-byte `ignore[].worker` names as normal config errors (exit 2). Names that are not Ruby constants, such as `管理::輸出`, were previously accepted but could never match a finding.
+
 ## 0.2.0 - 2026-10-02
 
 Broader native Sidekiq producer coverage:
