@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 - 2026-10-02
+## 0.2.1 - 2026-10-04
 
 Canonical worker-name consistency:
 

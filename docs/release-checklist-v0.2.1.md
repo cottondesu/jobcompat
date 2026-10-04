@@ -6,7 +6,7 @@ This is preparation for a maintenance update to the already published `jobcompat
 
 - Repository: `cottondesu/jobcompat`, branch `main`.
 - Gem version: `0.2.1`; intended annotated tag: `v0.2.1`.
-- Intended release date: `2026-10-02`. If execution is delayed, reconcile the CHANGELOG date with the actual intended date before tagging; never backdate publication.
+- Intended release date: `2026-10-04`. If execution is delayed, reconcile the CHANGELOG date with the actual intended date before tagging; never backdate publication.
 - JSON schema: `2`; `.jobcompat.yml` configuration schema: `1`.
 - Implementation commit: `fd6d138f229228be8801de9a7ae040cab21c9923` (`Fix Unicode worker suppression validation`), on top of the v0.2.0 release commit `378203731bcc0e4a06a1a3550fbd5605d9760f2e`.
 - Implementation history note: the implementation was first pushed as `0397dc5b7b8eb4acaa975d8d3b628aa4f87aed8a`. At the maintainer's request, before any tag or publication, it was replaced once on `main` by `fd6d138` to correct the commit author and committer and remove a co-author trailer. Both commits have the identical tree `18602325cc75951aee1d078c92c4c7813443f570`, so the reviewed product bytes are unchanged. `0397dc5` is no longer on `main` and must not be tagged.
@@ -42,6 +42,7 @@ This is preparation for a maintenance update to the already published `jobcompat
 - [ ] Confirm the current RubyGems Trusted Publisher for `jobcompat` in the maintainer UI: owner `cottondesu`, repository `jobcompat`, workflow file `release.yml`, environment `release`. Public package metadata and earlier publications are not proof of the current publisher settings. Do not introduce a long-lived RubyGems API key. See [Trusted Publishing](https://guides.rubygems.org/trusted-publishing/).
 - [x] Release workflow retains the tag/version and public metadata gates. Gem homepage, source, changelog, and issue URLs refer to `cottondesu/jobcompat`.
 - [x] Review the v0.2.1 release notes against the normative scope and inspect the built candidate package.
+- [x] On 2026-10-04, current-state recheck: public RubyGems listed `0.2.0` and `0.1.0` and no `0.2.1` (versions API 404); remote tags were `v0.1.0` and `v0.2.0` only, with no local `v0.2.1` tag; GitHub Releases were `v0.2.0` and `v0.1.0`. Repeat this check immediately before release execution.
 - [ ] Immediately before release execution, recheck that `0.2.1` is absent on RubyGems and `v0.2.1` is absent locally, remotely, and in GitHub Releases. Stop if any already exists; never overwrite it.
 
 ## Tag gate
