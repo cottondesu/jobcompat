@@ -54,7 +54,7 @@ ERROR JC001 ExportJob
   Risk: Jobs queued by the base revision may fail after deployment.
 ```
 
-The second direction appears only when HEAD also has a one-argument producer. Output includes source locations, suggested migration steps, resolved commit SHAs, and a summary. JSON output uses `schema_version: 2` and includes per-worker compatibility matrices.
+The second direction appears only when HEAD also has a one-argument producer. Output includes source locations, suggested migration steps, resolved commit SHAs, and a summary. JSON output uses `schema_version: 3` and includes per-serialized-identity compatibility matrices and alias provenance.
 
 ## How it works
 
@@ -140,9 +140,36 @@ jobcompat sees payload arities 1 and 2. A dynamic bulk row is retained as `dynam
 
 Positional `perform` parameters may be required, optional, rest, post-rest, or forwarding. Keyword parameters make the worker contract unknown in v0.2.
 
-## Limitations and v0.2 non-goals
+### Worker rename and static compatibility aliases
 
-v0.2 checks **positional arity only**. It does not check value types, Hash internals, keyword compatibility, or JSON serialization. It supports native Sidekiq, not ActiveJob. Dynamic bulk collections are warning/unknown, Client payload variables are not followed, and custom wrappers are not analyzed. ActiveJob, arbitrary Client instances, Hash internal schemas, aliases, inheritance, concerns, arbitrary metaprogramming, feature flags, and general Ruby class/module or superclass conflict analysis remain outside scope.
+jobcompat recognizes plain static constant aliases to directly recognized jobs, including finite chains and supported namespaces:
+
+```ruby
+class MyNewJob
+  include Sidekiq::Job
+  def perform(id); end
+end
+
+MyOldJob = MyNewJob
+```
+
+Old queued `"MyOldJob"` payloads can resolve through the alias to the new worker contract, so this rename does not produce JC004. Arity incompatibilities still produce the normal findings under the persisted name.
+
+`MyOldJob.perform_async(1)` uses the aliased Class object: Sidekiq serializes its canonical name **MyNewJob**, not the source alias token. This also applies to scheduling, bulk, Setter calls, and Client constant payloads. During a rolling deployment, activating that producer can still cause JC005 MyNewJob if old processes cannot resolve the new identity. A compatibility alias alone does not make immediate new-name producer activation safe.
+
+By contrast, an explicit Client String keeps its exact identity:
+
+```ruby
+Sidekiq::Client.push("class" => "MyOldJob", "args" => [1])
+```
+
+jobcompat models that producer as MyOldJob, then follows the alias on the consumer side. This describes identity behavior; Client Strings also have different job-option/default semantics.
+
+Only unconditional plain constant assignments are trusted. Cycles, conflicting or repeated bindings, dynamic assignments, and conditional aliases warn when relevant. Excluded aliases can block an absence proof but are not trusted as compatibility paths. There is no const_set/autoload/const_missing support, conditional alias proof, runtime load-order proof, or heuristic rename detection. Recognition assumes successful application boot, just as direct worker recognition does.
+
+## Limitations and non-goals
+
+jobcompat checks **positional arity only**. It does not check value types, Hash internals, keyword compatibility, or JSON serialization. It supports native Sidekiq, not ActiveJob. Dynamic bulk collections are warning/unknown, Client payload variables are not followed, and custom wrappers are not analyzed. ActiveJob, arbitrary Client instances, Hash internal schemas, general Ruby aliases beyond the static subset above, inheritance, concerns, arbitrary metaprogramming, feature flags, and general Ruby class/module or superclass conflict analysis remain outside scope.
 
 No repository producer callsite does **not** prove an empty queue: queued, scheduled, retried, historical, and external jobs may exist. JC004 requires a completed static absence proof across tracked `.rb` source. An excluded or unrecognized declaration warns. JC005 is a structural rolling-deploy error conditional on an old Sidekiq process being able to consume the new job's queue. Queue isolation and feature flags are not analyzed. Dynamic source may warn or be missed. Working-tree edits are ignored.
 
@@ -171,7 +198,7 @@ Possible future work includes SARIF output and additional evidence sources. Othe
 
 ## Contributing
 
-Run `bundle exec rake test` and `gem build jobcompat.gemspec` with Ruby 3.3 or newer. Tests create temporary Git repositories and need no Redis or Sidekiq server. The [v0.1 specification](docs/spec-v0.1.md) remains the baseline; [the normative v0.2 delta](docs/spec-v0.2.md) defines the added producer coverage, and [the v0.2.1 delta](docs/spec-v0.2.1.md) defines shared canonical worker-name validation.
+Run `bundle exec rake test` and `gem build jobcompat.gemspec` with Ruby 3.3 or newer. Tests create temporary Git repositories and need no Redis or Sidekiq server. The [v0.1 specification](docs/spec-v0.1.md) remains the baseline; [the normative v0.2 delta](docs/spec-v0.2.md) defines the added producer coverage, [the v0.2.1 delta](docs/spec-v0.2.1.md) defines shared canonical worker-name validation, and [the v0.3 delta](docs/spec-v0.3.md) defines static compatibility aliases and serialized identity resolution.
 
 ## License
 

@@ -208,7 +208,7 @@ class CheckCommandTest < Minitest::Test
       data, error, code = json_check(dir, base)
       assert_equal 0, code, error
       assert_empty error
-      assert_equal 2, data["schema_version"]
+      assert_equal 3, data["schema_version"]
       assert_equal "completed", data["status"]
       assert_empty data["findings"]
       assert_equal 0, data["summary"]["errors"]

@@ -1,7 +1,13 @@
-# jobcompat v0.2 architecture
+# jobcompat v0.3.0 architecture
 
-Status: implemented design for `0.2.0`
-Date: 2026-09-28
+Status: implemented design for `0.3.0`
+Date: 2026-10-05
+
+This document describes the current v0.3.0 architecture, extending the
+historical v0.1 and v0.2 design. References to those releases record inherited
+design decisions and additions. The current JSON output schema is 3;
+schema 2 describes historical v0.2 behavior. `docs/spec-v0.3.md` defines the
+normative v0.3.0 contract.
 
 ## 1. Architecture principles
 
@@ -214,7 +220,7 @@ The engine MUST be pure with respect to filesystem, Git, environment, clock, and
 Formatters receive a completed or failed result envelope. They MUST NOT recalculate compatibility or suppression. They render already matched suppression audit records without reconstructing omitted findings.
 
 - `Formatter::Text` renders concise human remediation.
-- `Formatter::Json` constructs schema-version-2 primitive Hash/Array data, preserving the v1 shape while extending producer `unknown_reason` values. It includes each finding's `revisions`, `directions`, and `unknown_reason` and each worker's base/head presence status, calls `JSON.pretty_generate`, and appends exactly one newline.
+- `Formatter::Json` constructs schema-version-3 primitive Hash/Array data, retaining the historical v0.2 fields and adding alias metadata and `resolved_alias` presence. It includes each finding's `revisions`, `directions`, and `unknown_reason` and each worker's base/head presence status, calls `JSON.pretty_generate`, and appends exactly one newline.
 
 Both consume already sorted results.
 
@@ -364,11 +370,45 @@ UnresolvedEnqueueCall
 unknown_reason      Symbol | nil
 ```
 
-The reason values map one-to-one to the frozen baseline strings in `docs/spec-v0.1.md` plus the schema-v2 producer additions in `docs/spec-v0.2.md`; visitors do not invent free-form reason text.
+The reason values retain the frozen baseline strings in `docs/spec-v0.1.md` and the historical v0.2/schema-v2 producer additions in `docs/spec-v0.2.md`, with current alias additions defined in `docs/spec-v0.3.md`; visitors do not invent free-form reason text.
 
 Only after both revisions' worker names are known does the engine resolve these facts. This avoids ordering dependence between files and enables head calls to removed base workers.
 
 ## 7. Internal models
+
+### v0.3.0 serialized identity resolution
+
+The existing Analyzer Prism pass extracts direct worker facts together with
+selected-source ConstantBinding and AliasCandidate facts. AliasResolver
+builds a deterministic per-revision graph using the same constant-path
+and lexical namespace rules, with iterative cycle detection and strict
+binding uniqueness. DefinedConstantIndex remains separate presence proof;
+its excluded-file facts never become trusted alias edges.
+Selected ambiguous paths retain separate leaf-name binding blockers; the
+resolver checks them at alias edges and direct terminals without evaluating
+dynamic receivers. Unrecognized terminal declarations remain diagnostic
+proof locations.
+
+RevisionSnapshot retains direct `workers` for summary counts and adds
+`aliases`, effective consumer contracts by serialized identity, and presence
+helpers. A resolved alias carries terminal contract and every edge's proof
+locations; an unknown binding masks a conflicting direct consumer.
+The snapshot also retains selected binding facts so alias-related producer
+lookup stops at nearer non-worker class/module declarations.
+
+Engine normalizes Class-object calls through their own revision's alias
+graph to terminal identities, preserving known identity even with unknown
+arity. Exact Client Strings retain their identity. Diagnostic attribution
+is separate from known serialized producer identity, so an unknown alias
+cannot drive JC005.
+Class-object alias calls carry terminal declaration/include/perform proof.
+Opposite revision names cannot override local bindings during alias lookup;
+the existing non-alias cross-revision attribution is preserved.
+The bounded comparison set includes historical BASE aliases and relevant
+producer/binding identities; dormant HEAD aliases do
+not automatically add warnings. Existing rules consume effective contracts.
+Schema 3 exposes base_alias/head_alias and resolved_alias presence while
+summary.workers still counts direct worker facts.
 
 Models SHOULD be immutable `Data.define` values on Ruby 3.3. Constructors validate invariants at the boundary; rule methods do not repeatedly revalidate them.
 

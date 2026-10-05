@@ -1,5 +1,6 @@
 require "prism"
 require_relative "canonical_worker_name"
+require_relative "aliases"
 
 module Jobcompat
   Location = Data.define(:revision, :path, :line, :column, :role, :excerpt) do
@@ -56,14 +57,32 @@ module Jobcompat
   end
 
   class RevisionSnapshot
-    attr_reader :label, :ref, :sha, :workers, :calls, :unknowns, :index, :files_scanned, :tracked_ruby
+    attr_reader :label, :ref, :sha, :workers, :aliases, :bindings, :calls, :unknowns, :index, :files_scanned, :tracked_ruby
 
-    def initialize(label:, ref:, sha:, workers:, calls:, unknowns:, index:, files_scanned:, tracked_ruby:)
+    def initialize(label:, ref:, sha:, workers:, calls:, unknowns:, index:, files_scanned:, tracked_ruby:, aliases: {}, bindings: [])
       @label, @ref, @sha, @workers, @calls, @unknowns, @index, @files_scanned, @tracked_ruby = label, ref, sha, workers, calls, unknowns, index, files_scanned, tracked_ruby
+      @aliases = aliases
+      @bindings = bindings.group_by(&:name).freeze
+    end
+
+    def consumer(name)
+      binding = aliases[name]
+      return workers[name] unless binding
+      return unless binding.resolved?
+      terminal = workers.fetch(binding.target)
+      terminal.with(name: name, locations: (binding.locations + terminal.locations).uniq,
+                    declaration_locations: (binding.locations + terminal.declaration_locations).uniq,
+                    fingerprint_parts: [binding.fingerprint_parts, terminal.fingerprint_parts])
+    end
+
+    def presence(name)
+      binding = aliases[name]
+      return binding.resolved? ? "resolved_alias" : "defined_unrecognized" if binding
+      index.status(name, recognized: workers.key?(name))
     end
 
     def check_presence(names, repository, config)
-      unresolved = names.reject { |name| index.status(name, recognized: workers.key?(name)) != "absent" }
+      unresolved = names.select { |name| presence(name) == "absent" }
       return if unresolved.empty?
       consumed = 0
       eligible = []
@@ -105,11 +124,12 @@ module Jobcompat
     PATH_CONSTANT_BINDINGS = [Prism::ConstantPathWriteNode, Prism::ConstantPathOrWriteNode,
                               Prism::ConstantPathAndWriteNode, Prism::ConstantPathOperatorWriteNode,
                               Prism::ConstantPathTargetNode].freeze
-    attr_reader :fragments, :calls, :unknowns
+    attr_reader :fragments, :calls, :unknowns, :bindings, :alias_candidates, :ambiguous_bindings
 
     def initialize(revision, path, source, index:, presence_only: false)
       @revision, @path, @source, @index, @presence_only = revision, path, source, index, presence_only
       @fragments, @calls, @unknowns = [], [], []
+      @bindings, @alias_candidates, @ambiguous_bindings = [], [], []
     end
 
     def analyze
@@ -122,7 +142,7 @@ module Jobcompat
         end
         raise Error.new(diagnostics.first[:message], category: "parse_error", location: diagnostics.first[:location], diagnostics: diagnostics)
       end
-      walk(result.value, [], [], nil)
+      walk(result.value, [], [], nil, true)
       self
     end
 
@@ -156,18 +176,29 @@ module Jobcompat
 
     private
 
-    def walk(node, namespace, scope, statement)
+    def walk(node, namespace, scope, statement, alias_context = false, alias_statement = nil)
       return unless node.is_a?(Prism::Node)
       case node
+      when Prism::ProgramNode
+        walk(node.statements, namespace, scope, nil, alias_context)
       when Prism::StatementsNode
-        node.body.each { |child| walk(child, namespace, scope, child) }
+        node.body.each { |child| walk(child, namespace, scope, child, alias_context, alias_context ? child : (alias_statement || child)) }
       when Prism::ClassNode, Prism::ModuleNode
         constant = self.class.constant(node.constant_path)
         name, valid = declaration_name(constant, namespace)
         location = loc(node, "worker_declaration")
         @index.add(name, location, selected: !@presence_only, ambiguous: !valid) if name
+        if name && !@presence_only
+          @bindings << ConstantBinding.new(name, "declaration", location,
+                                            [scope, self.class.normalize(node.constant_path.location.slice), node.class.name])
+        end
         if !name && node.constant_path.is_a?(Prism::ConstantPathNode)
           @index.add(node.constant_path.name.to_s.encode(Encoding::UTF_8), location, selected: !@presence_only, ambiguous: true)
+        end
+        unless valid || @presence_only
+          leaf = name&.split("::")&.last || node.constant_path.name.to_s.encode(Encoding::UTF_8)
+          @ambiguous_bindings << ConstantBinding.new(leaf, "declaration", location,
+                                                     [scope, self.class.normalize(node.constant_path.location.slice), node.class.name])
         end
         new_scope = scope + [name || "<unsupported_class>"]
         if node.is_a?(Prism::ClassNode) && valid && !@presence_only
@@ -185,24 +216,25 @@ module Jobcompat
                                    [@path, new_scope, self.class.normalize(node.constant_path.location.slice), include_tokens])
         end
         child_namespace = valid && namespace ? namespace + [name] : nil
-        walk(node.superclass, namespace, scope, statement) if node.is_a?(Prism::ClassNode) && node.superclass
-        walk(node.body, child_namespace, new_scope, nil) if node.body
+        walk(node.superclass, namespace, scope, statement, false, alias_statement) if node.is_a?(Prism::ClassNode) && node.superclass
+        body_context = alias_context && node.equal?(statement) && valid
+        walk(node.body, child_namespace, new_scope, nil, body_context, body_context ? nil : alias_statement) if node.body
       when Prism::DefNode
         method_scope = node.receiver ? [self.class.normalize(node.receiver.location.slice), node.name.to_s] : node.name.to_s
         child_scope = scope + [method_scope]
-        walk(node.receiver, namespace, scope, statement) if node.receiver
-        walk(node.parameters, namespace, child_scope, node.parameters) if node.parameters
-        walk(node.body, namespace, child_scope, nil) if node.body
+        walk(node.receiver, namespace, scope, statement, false, alias_statement) if node.receiver
+        walk(node.parameters, namespace, child_scope, node.parameters, false, alias_statement) if node.parameters
+        walk(node.body, namespace, child_scope, nil, false, alias_statement) if node.body
       when Prism::SingletonClassNode
-        walk(node.expression, namespace, scope, statement)
+        walk(node.expression, namespace, scope, statement, false, alias_statement)
         singleton_scope = scope + [["singleton_class", self.class.normalize(node.expression.location.slice)]]
-        walk(node.body, namespace, singleton_scope, nil) if node.body
+        walk(node.body, namespace, singleton_scope, nil, false, alias_statement) if node.body
       when Prism::CallNode
         extract_call(node, namespace, scope, statement) unless @presence_only
-        node.compact_child_nodes.each { |child| walk(child, namespace, scope, statement) }
+        node.compact_child_nodes.each { |child| walk(child, namespace, scope, statement, false, alias_statement || statement) }
       else
-        constant_write(node, namespace) if SIMPLE_CONSTANT_BINDINGS.any? { |type| node.is_a?(type) } || PATH_CONSTANT_BINDINGS.any? { |type| node.is_a?(type) }
-        node.compact_child_nodes.each { |child| walk(child, namespace, scope, statement) }
+        constant_write(node, namespace, scope, alias_statement || statement, alias_context && node.equal?(statement)) if SIMPLE_CONSTANT_BINDINGS.any? { |type| node.is_a?(type) } || PATH_CONSTANT_BINDINGS.any? { |type| node.is_a?(type) }
+        node.compact_child_nodes.each { |child| walk(child, namespace, scope, statement, false, alias_statement || statement) }
       end
     end
 
@@ -214,10 +246,12 @@ module Jobcompat
       [((rooted || segments.length > 1) ? segments : (namespace.empty? ? [] : namespace.last.split("::")) + segments).join("::"), true]
     end
 
-    def constant_write(node, namespace)
+    def constant_write(node, namespace, scope, statement, alias_context)
       if SIMPLE_CONSTANT_BINDINGS.any? { |type| node.is_a?(type) }
         prefix = namespace.nil? || namespace.empty? ? [] : namespace.last.split("::")
-        @index.add((prefix + [node.name.to_s.encode(Encoding::UTF_8)]).join("::"), loc(node, "worker_declaration"),
+        name = (prefix + [node.name.to_s.encode(Encoding::UTF_8)]).join("::")
+        valid = !namespace.nil?
+        @index.add(name, loc(node, "worker_declaration"),
                    selected: !@presence_only, ambiguous: namespace.nil?)
       else
         target = node.is_a?(Prism::ConstantPathTargetNode) ? node : node.target
@@ -228,6 +262,22 @@ module Jobcompat
           @index.add(target.name.to_s.encode(Encoding::UTF_8), loc(node, "worker_declaration"), selected: !@presence_only, ambiguous: true)
         end
       end
+      return if @presence_only
+      unless valid
+        leaf = name&.split("::")&.last || target.name.to_s.encode(Encoding::UTF_8)
+        @ambiguous_bindings << ConstantBinding.new(leaf, "write", loc(node, "worker_declaration"),
+                                                   [scope, self.class.normalize(node.location.slice), self.class.normalize((statement || node).location.slice)])
+      end
+      return if name.nil?
+      plain = node.is_a?(Prism::ConstantWriteNode) || node.is_a?(Prism::ConstantPathWriteNode)
+      reference = self.class.constant(node.value) if node.respond_to?(:value)
+      supported = plain && valid && alias_context && reference &&
+                  (reference.last || reference.first.length == 1 || namespace.empty?)
+      location = loc(node, "worker_declaration")
+      parts = [scope, self.class.normalize(node.location.slice), self.class.normalize((statement || node).location.slice), reference]
+      @bindings << ConstantBinding.new(name, "write", location, parts)
+      @alias_candidates << AliasCandidate.new(name, reference && reference.first.join("::"), reference && reference.last,
+                                              namespace, !!supported, location, parts)
     end
 
     def sidekiq_include?(node)
@@ -421,7 +471,7 @@ module Jobcompat
       selected = entries.select { |entry| @config.scan?(entry.path) }
       tracked = entries.select { |entry| entry.path.end_with?(".rb") }
       index = DefinedConstantIndex.new
-      fragments, calls, unknowns, errors = [], [], [], []
+      fragments, calls, unknowns, errors, bindings, alias_candidates, ambiguous_bindings = [], [], [], [], [], [], []
       @repository.each_blob(selected) do |entry, bytes|
         path = entry.path
         begin
@@ -429,6 +479,9 @@ module Jobcompat
           fragments.concat(result.fragments)
           calls.concat(result.calls)
           unknowns.concat(result.unknowns)
+          bindings.concat(result.bindings)
+          alias_candidates.concat(result.alias_candidates)
+          ambiguous_bindings.concat(result.ambiguous_bindings)
         rescue Error => error
           errors << error
         end
@@ -470,8 +523,9 @@ module Jobcompat
           workers[name] = Contract.new(name, required, rest ? nil : required + optional, forwarding ? "forwarding" : "positional", signature, nil, locations, declarations, fingerprint_parts)
         end
       end
-      RevisionSnapshot.new(label: label, ref: ref, sha: sha, workers: workers, calls: calls, unknowns: unknowns, index: index,
-                           files_scanned: selected.length, tracked_ruby: tracked)
+      aliases = AliasResolver.new(workers, bindings, alias_candidates, ambiguous_bindings).resolve
+      RevisionSnapshot.new(label: label, ref: ref, sha: sha, workers: workers, aliases: aliases, calls: calls, unknowns: unknowns, index: index,
+                           files_scanned: selected.length, tracked_ruby: tracked, bindings: bindings)
     end
   end
 end

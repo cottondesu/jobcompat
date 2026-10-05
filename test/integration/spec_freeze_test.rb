@@ -99,7 +99,7 @@ class SpecFreezeTest < Minitest::Test
       data, _, code = json_check(dir, base)
       assert_equal 0, code
       assert_equal ["JC007"], data["findings"].map { |item| item["rule_id"] }
-      assert_equal "worker_not_recognized", data["findings"][0]["unknown_reason"]
+      assert_equal "unsupported_alias_assignment", data["findings"][0]["unknown_reason"]
     end
   end
 
@@ -451,7 +451,7 @@ class SpecFreezeTest < Minitest::Test
       data, _, code = json_check(dir, base)
       assert_equal 0, code
       assert_equal ["JC007"], data["findings"].map { |item| item["rule_id"] }
-      assert_equal "worker_not_recognized", data["findings"][0]["unknown_reason"]
+      assert_equal "unsupported_alias_assignment", data["findings"][0]["unknown_reason"]
     end
   end
 

@@ -11,7 +11,7 @@ class ProducerV02IntegrationTest < Minitest::Test
 
       data, error, code = json_check(dir, base)
       assert_equal 1, code, error
-      assert_equal 2, data["schema_version"]
+      assert_equal 3, data["schema_version"]
       assert_equal %w[JC001 JC002 JC007 JC007], data["findings"].map { |item| item["rule_id"] }
       assert_equal [1, 2], data["workers"][0]["producer_arities"]["head"]
       assert data["findings"].last(2).all? { |item| item["unknown_reason"] == "dynamic_bulk_arguments" }
@@ -205,7 +205,7 @@ class ProducerV02IntegrationTest < Minitest::Test
 
         data, error, code = json_check(dir, base)
         assert_equal 0, code, error
-        assert_equal 2, data["schema_version"]
+        assert_equal 3, data["schema_version"]
         refute data["findings"].any? { |item| item["rule_id"] == "JC005" && item["worker"] == "ExportJob" }
         assert_equal %w[JC007 JC007], data["findings"].map { |item| item["rule_id"] }
         assert data["findings"].all? { |item| item["worker"].nil? && item["unknown_reason"] == "unsupported_client_payload" }

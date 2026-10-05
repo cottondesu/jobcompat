@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
+- Recognize static Sidekiq compatibility aliases, including finite chains and supported namespaces, to preserve old serialized identities across worker renames.
+- Normalize Class-object producers through aliases to the terminal Class name while preserving exact Client String identities.
+- Report relevant unresolved, cyclic, conflicting, or unsupported alias bindings conservatively as JC007.
+- Emit JSON schema 3 with effective serialized-identity worker results, alias metadata, and resolved_alias presence; direct worker summary counts and config schema 1 remain unchanged.
+
 ## 0.2.1 - 2026-10-04
 
 Canonical worker-name consistency:
