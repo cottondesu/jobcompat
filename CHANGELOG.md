@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-10-05
 
 - Recognize static Sidekiq compatibility aliases, including finite chains and supported namespaces, to preserve old serialized identities across worker renames.
 - Normalize Class-object producers through aliases to the terminal Class name while preserving exact Client String identities.
