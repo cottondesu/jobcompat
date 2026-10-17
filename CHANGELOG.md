@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 - Unreleased
+
+- Add optional `--explain` text output showing the evidence, decision, and boundary behind each surviving JC001–JC007 finding, including alias provenance for serialized identities.
+- Compatibility decisions, default text output, and JSON schema 3 content are unchanged; combining `--explain` with `--format json` fails with a config error before analysis.
+
 ## 0.3.0 - 2026-10-05
 
 - Recognize static Sidekiq compatibility aliases, including finite chains and supported namespaces, to preserve old serialized identities across worker renames.

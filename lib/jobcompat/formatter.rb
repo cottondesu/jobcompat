@@ -15,7 +15,7 @@ module Jobcompat
       end
     end
 
-    def self.text(envelope)
+    def self.text(envelope, explanations: nil)
       return envelope[:diagnostics].map { |item| safe_line("#{item[:category]}: #{item[:message]}") }.join("\n") + "\n" if envelope[:status] == "failed"
       base = envelope[:comparison][:base]
       head = envelope[:comparison][:head]
@@ -34,6 +34,16 @@ module Jobcompat
           lines << "  Risk: #{finding[:risk]}"
           finding[:locations].each do |location|
             lines << "  #{location.revision} #{location.path}:#{location.line}:#{location.column} (#{location.role})"
+          end
+          explanation = explanations && explanations[finding]
+          if explanation
+            lines << "  Explanation:"
+            lines << "    Evidence:"
+            explanation.evidence.each { |fact| lines << "      #{fact}" }
+            lines << "    Decision:"
+            lines << "      #{explanation.decision}"
+            lines << "    Boundary:"
+            lines << "      #{explanation.boundary}"
           end
           lines << "  Suggested migration:"
           finding[:remediation].each_with_index { |step, index| lines << "    #{index + 1}. #{step}" }

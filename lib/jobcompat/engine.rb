@@ -32,8 +32,9 @@ module Jobcompat
       @presence_requests
     end
 
-    def evaluate
+    def evaluate(with_explanations: false)
       findings = []
+      explanations = {}.compare_by_identity
       workers = @names.map do |name|
         b = base.consumer(name)
         h = head.consumer(name)
@@ -43,22 +44,32 @@ module Jobcompat
         head_presence = presence(head, name, h, presence_requests["head"].include?(name))
         if b && !h
           if head_presence == "absent"
-            findings << finding("JC004", name, ["base", "head"], ["base_to_head"], nil, nil,
-                                "The serialized worker identity is absent from HEAD tracked Ruby source.",
-                                "Queued, retried, or scheduled jobs may still reference this class name.",
-                                ["Keep the worker class or a supported compatibility alias until retained jobs can no longer run."],
-                                b.declaration_locations + contract_proof(b) + producer_proof(hc))
-          else
-            findings << presence_unknown(name, head_presence, b.declaration_locations + head.index.locations(name), "base_to_head", "head") unless head.aliases.key?(name)
+            item = finding("JC004", name, ["base", "head"], ["base_to_head"], nil, nil,
+                           "The serialized worker identity is absent from HEAD tracked Ruby source.",
+                           "Queued, retried, or scheduled jobs may still reference this class name.",
+                           ["Keep the worker class or a supported compatibility alias until retained jobs can no longer run."],
+                           b.declaration_locations + contract_proof(b) + producer_proof(hc))
+            findings << item
+            explanations[item] = ExplanationBuilder.jc004(worker: name, base_contract: b, head_producers: hc,
+                                                           aliases: alias_provenance(name)) if with_explanations
+          elsif !head.aliases.key?(name)
+            item = presence_unknown(name, head_presence, b.declaration_locations + head.index.locations(name), "base_to_head", "head")
+            findings << item
+            explanations[item] = ExplanationBuilder.presence_unknown(worker: name, status: head_presence, revision: "head") if with_explanations
           end
         elsif h && !b && !hc.empty?
           if base_presence == "absent"
-            findings << finding("JC005", name, ["base", "head"], ["head_to_base"], nil, nil,
-                                "HEAD can enqueue a serialized worker identity absent from base tracked Ruby source.",
-                                "If an old Sidekiq process can consume this job during the rolling deployment, it cannot resolve the new worker class.",
-                                ["Deploy the worker class or compatibility alias before activating its producer."], h.declaration_locations + producer_proof(hc))
-          else
-            findings << presence_unknown(name, base_presence, h.declaration_locations + base.index.locations(name), "head_to_base", "base") unless base.aliases.key?(name)
+            item = finding("JC005", name, ["base", "head"], ["head_to_base"], nil, nil,
+                           "HEAD can enqueue a serialized worker identity absent from base tracked Ruby source.",
+                           "If an old Sidekiq process can consume this job during the rolling deployment, it cannot resolve the new worker class.",
+                           ["Deploy the worker class or compatibility alias before activating its producer."], h.declaration_locations + producer_proof(hc))
+            findings << item
+            explanations[item] = ExplanationBuilder.jc005(worker: name, head_contract: h, head_calls: hc,
+                                                          aliases: alias_provenance(name)) if with_explanations
+          elsif !base.aliases.key?(name)
+            item = presence_unknown(name, base_presence, h.declaration_locations + base.index.locations(name), "head_to_base", "base")
+            findings << item
+            explanations[item] = ExplanationBuilder.presence_unknown(worker: name, status: base_presence, revision: "base") if with_explanations
           end
         end
 
@@ -72,10 +83,13 @@ module Jobcompat
             directions = ["base_to_head"]
             directions << "head_to_head" unless head_same.empty?
             locations = producer_proof(group) + contract_proof(b) + contract_proof(h) + producer_proof(head_same)
-            findings << finding("JC001", name, head_same.empty? ? ["base", "head"] : ["base", "head"], directions, arity, nil,
-                                "Base emits #{arity} #{argument_word(arity)}, but the HEAD worker accepts #{h.display_range}.",
-                                "Jobs queued by the base revision may fail after deployment.",
-                                ["Make the HEAD worker accept old payloads.", "Narrow only after queue, retry, and schedule retention is handled."], locations)
+            item = finding("JC001", name, head_same.empty? ? ["base", "head"] : ["base", "head"], directions, arity, nil,
+                           "Base emits #{arity} #{argument_word(arity)}, but the HEAD worker accepts #{h.display_range}.",
+                           "Jobs queued by the base revision may fail after deployment.",
+                           ["Make the HEAD worker accept old payloads.", "Narrow only after queue, retry, and schedule retention is handled."], locations)
+            findings << item
+            explanations[item] = ExplanationBuilder.jc001(arity: arity, base_contract: b, head_contract: h, head_witness: !head_same.empty?,
+                                                          aliases: alias_provenance(name)) if with_explanations
             proven_narrow = true
           end
         end
@@ -84,17 +98,23 @@ module Jobcompat
           head_groups.sort.each do |arity, group|
             if !h.accepts?(arity)
               next if findings.any? { |item| item[:rule_id] == "JC001" && item[:worker] == name && item[:payload_arity] == arity }
-              findings << finding("JC003", name, ["head"], ["head_to_head"], arity, nil,
-                                  "HEAD emits #{arity} #{argument_word(arity)}, but its worker accepts #{h.display_range}.",
-                                  "Current HEAD jobs can fail when executed.", ["Align the enqueue payload with the HEAD perform signature."],
-                                  producer_proof(group) + contract_proof(h))
+              item = finding("JC003", name, ["head"], ["head_to_head"], arity, nil,
+                             "HEAD emits #{arity} #{argument_word(arity)}, but its worker accepts #{h.display_range}.",
+                             "Current HEAD jobs can fail when executed.", ["Align the enqueue payload with the HEAD perform signature."],
+                             producer_proof(group) + contract_proof(h))
+              findings << item
+              explanations[item] = ExplanationBuilder.jc003(arity: arity, head_contract: h,
+                                                            aliases: alias_provenance(name, head)) if with_explanations
               current_removed_witness ||= b&.known? && b.accepts?(arity)
             elsif b&.known? && !b.accepts?(arity)
-              findings << finding("JC002", name, ["base", "head"], ["head_to_base"], arity, nil,
-                                  "HEAD emits #{arity} #{argument_word(arity)}, but the base worker accepts #{b.display_range}.",
-                                  "A new producer can enqueue work that an old worker cannot execute during a rolling deploy.",
-                                  ["Deploy the optional worker argument first.", "Start enqueueing the new argument in a later release."],
-                                  producer_proof(group) + contract_proof(b) + contract_proof(h))
+              item = finding("JC002", name, ["base", "head"], ["head_to_base"], arity, nil,
+                             "HEAD emits #{arity} #{argument_word(arity)}, but the base worker accepts #{b.display_range}.",
+                             "A new producer can enqueue work that an old worker cannot execute during a rolling deploy.",
+                             ["Deploy the optional worker argument first.", "Start enqueueing the new argument in a later release."],
+                             producer_proof(group) + contract_proof(b) + contract_proof(h))
+              findings << item
+              explanations[item] = ExplanationBuilder.jc002(arity: arity, base_contract: b, head_contract: h,
+                                                            aliases: alias_provenance(name)) if with_explanations
             end
           end
         end
@@ -102,11 +122,14 @@ module Jobcompat
           unless h.superset_of?(b) || proven_narrow || current_removed_witness
             removed = removed_arity_ranges(b, h)
             label = removed.length == 1 && removed.first.match?(/\A\d+\z/) ? "arity" : "arities"
-            findings << finding("JC006", name, ["base", "head"], ["base_to_head"], nil, nil,
-                                "The HEAD worker removed #{label} #{removed.join(', ')} from the base contract; no qualifying producer witness was found.",
-                                "No repository producer callsite found does not prove that no queued, scheduled, retried, historical, or externally enqueued payload exists.",
-                                ["Keep the broader signature through the retention window, or document a proven drain."],
-                                contract_proof(b) + contract_proof(h))
+            item = finding("JC006", name, ["base", "head"], ["base_to_head"], nil, nil,
+                           "The HEAD worker removed #{label} #{removed.join(', ')} from the base contract; no qualifying producer witness was found.",
+                           "No repository producer callsite found does not prove that no queued, scheduled, retried, historical, or externally enqueued payload exists.",
+                           ["Keep the broader signature through the retention window, or document a proven drain."],
+                           contract_proof(b) + contract_proof(h))
+            findings << item
+            explanations[item] = ExplanationBuilder.jc006(worker: name, base_contract: b, head_contract: h, removed: removed,
+                                                          aliases: alias_provenance(name)) if with_explanations
           end
         end
 
@@ -121,9 +144,11 @@ module Jobcompat
                           head_to_base: cell(hc, b, base_presence), head_to_head: cell(hc, h, head_presence)}
         }
       end
-      findings.concat(unknown_findings)
+      findings.concat(unknown_findings(explanations: with_explanations ? explanations : nil))
       findings = findings.sort_by { |item| finding_sort_key(item) }
-      {findings: findings, workers: workers}
+      result = {findings: findings, workers: workers}
+      result[:explanations] = explanations if with_explanations
+      result
     end
 
     private
@@ -189,6 +214,17 @@ module Jobcompat
 
     def producer_proof(group) = group.flat_map { |call| call[:locations] }
 
+    def alias_provenance(name, *snapshots)
+      snapshots = [base, head] if snapshots.empty?
+      snapshots.filter_map do |snapshot|
+        binding = snapshot.aliases[name]
+        next unless binding
+        chain = binding.chain.join(" -> ")
+        binding.resolved? ? "Alias (#{snapshot.label.upcase}): #{chain} (resolved)." :
+          "Alias (#{snapshot.label.upcase}): #{chain.length > 1 ? chain : "unresolved"} (#{binding.unknown_reason})."
+      end
+    end
+
     def contract_proof(contract)
       return contract.locations if base.aliases.key?(contract.name) || head.aliases.key?(contract.name)
       contract.locations.select { |location| location.role == "consumer" }
@@ -236,7 +272,7 @@ module Jobcompat
               ["Restore a directly recognized worker declaration, or inspect the deployment manually."], locations)
     end
 
-    def unknown_findings
+    def unknown_findings(explanations: nil)
       roots = []
       [base, head].each do |snapshot|
         @names.each do |name|
@@ -251,7 +287,8 @@ module Jobcompat
           producer_locations = calls[snapshot.label].select { |call| call[:identity_reason] && call[:attributed_worker] == name }.flat_map { |call| call[:locations] }
           roots << {revision: snapshot.label, kind: "consumer_alias", reason: binding.unknown_reason, worker: name,
                     locations: binding.locations + producer_locations,
-                    parts: ["consumer_alias", binding.unknown_reason, name, binding.fingerprint_parts, binding.chain], offset: 0}
+                    parts: ["consumer_alias", binding.unknown_reason, name, binding.fingerprint_parts, binding.chain],
+                    chain: binding.chain, offset: 0}
         end
         snapshot.unknowns.each do |item|
           roots << {revision: snapshot.label, kind: item.kind, reason: item.reason, worker: item.worker,
@@ -294,9 +331,11 @@ module Jobcompat
         message = alias_reason ? alias_message(first[:worker], first[:reason]) : "#{first[:reason]} prevents a complete positional compatibility check."
         risk = alias_reason ? "Compatibility for jobs serialized as #{first[:worker]} cannot be proven from selected source." : "The affected producer or consumer contract is unknown."
         remediation = alias_reason ? ["Use one explicit static alias if it matches runtime behavior, or inspect the deployment manually."] : ["Use supported explicit syntax or inspect this call manually."]
-        finding("JC007", first[:worker], group.map { |root| root[:revision] }.uniq, directions, nil, first[:reason],
-                message, risk, remediation,
-                group.flat_map { |root| root[:locations] })
+        item = finding("JC007", first[:worker], group.map { |root| root[:revision] }.uniq, directions, nil, first[:reason],
+                       message, risk, remediation,
+                       group.flat_map { |root| root[:locations] })
+        explanations[item] = ExplanationBuilder.unknown_group(roots: group, message: message) if explanations
+        item
       end
     end
 

@@ -9,6 +9,7 @@ module Jobcompat
     def initialize(args, stdout, stderr, directory)
       @args, @stdout, @stderr, @directory = args.dup, stdout, stderr, directory
       @base, @head, @format, @config_path = nil, "HEAD", "text", nil
+      @explain = false
       @base_sha = @head_sha = @loaded_config = nil
     end
 
@@ -22,12 +23,14 @@ module Jobcompat
         options.on("--head REF", "Head commit-ish (default HEAD)") { |value| @head = value }
         options.on("--format FORMAT", "text or json") { |value| @format = value }
         options.on("--config PATH", "Config YAML path") { |value| @config_path = value }
+        options.on("--explain", "Explain the evidence behind each finding (text only)") { @explain = true }
         options.on("-h", "--help", "Show help") { @stdout.puts(options); return 0 }
       end
       parser.parse!(@args)
       raise Error.new("Unexpected arguments: #{@args.join(' ')}", category: "config_error") unless @args.empty?
       raise Error.new("--base is required", category: "config_error") unless @base && !@base.empty?
       raise Error.new("--format must be text or json", category: "config_error") unless %w[text json].include?(@format)
+      raise Error.new("--explain is supported only with --format text", category: "config_error") if @explain && @format != "text"
       repository = GitRepository.new(@directory)
       config = Config.load(root: repository.root, explicit: @config_path, invocation_dir: @directory)
       @loaded_config = config.display_path
@@ -57,7 +60,7 @@ module Jobcompat
       requests = engine.presence_requests
       head.check_presence(requests["head"], repository, config)
       base.check_presence(requests["base"], repository, config)
-      result = engine.evaluate
+      result = engine.evaluate(with_explanations: @explain)
       findings, suppressions = config.suppressions(result[:findings])
       summary = {
         errors: findings.count { |item| item[:severity] == "error" }, warnings: findings.count { |item| item[:severity] == "warning" },
@@ -67,7 +70,13 @@ module Jobcompat
         enqueue_calls: {base: base.calls.length, head: head.calls.length,
                         unknown: engine.calls.values.flatten.count { |call| call[:reason] }}
       }
-      @stdout.write(Formatter.public_send(@format, envelope("completed", findings, suppressions, result[:workers], [], summary)))
+      completed = envelope("completed", findings, suppressions, result[:workers], [], summary)
+      output = if @format == "json"
+        Formatter.json(completed)
+      else
+        Formatter.text(completed, explanations: @explain ? result[:explanations] : nil)
+      end
+      @stdout.write(output)
       summary[:errors].positive? ? 1 : 0
     rescue OptionParser::ParseError => error
       failure(Error.new(error.message, category: "config_error"))

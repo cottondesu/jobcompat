@@ -36,9 +36,12 @@ From a Git repository containing native Sidekiq jobs:
 ```sh
 jobcompat check --base origin/main
 jobcompat check --base v0.1.0 --head HEAD --format json
+jobcompat check --base origin/main --explain
 ```
 
 Both refs resolve to commits. Staged and uncommitted changes are ignored. The command never checks out another revision or changes the working tree.
+
+`--explain` appends an `Explanation` section—evidence, decision, and boundary—to each remaining finding in text output. It shows why a rule fired from the static evidence jobcompat already collected: it runs no additional compatibility checks, cannot be combined with `--format json` (exit 2 config error), reports only static source evidence, and never turns an `unknown` result into a safety claim.
 
 ## Example output
 
